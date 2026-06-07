@@ -16,7 +16,7 @@ You add `os.environ["STRIPE_WEBHOOK_SECRET"]` in your code, deploy, and get a `K
 
 - Scans source files for every env var reference
 - Cross-checks against all `.env*` files in your project
-- Reports: ✓ defined · ✗ missing · ⚠ unused
+- Reports: defined · missing · unused
 - Supports **10 languages** out of the box
 - JSON output for CI pipelines (`--format json`)
 - `--strict` flag for fail-fast CI enforcement
