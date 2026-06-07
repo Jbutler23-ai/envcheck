@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "envcheck"
+version = "1.0.0"
+description = "Audit environment variable usage across your codebase"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["env", "dotenv", "environment", "audit", "developer-tools", "cli", "security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Topic :: Security",
+]
+
+[project.scripts]
+envcheck = "envcheck:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
