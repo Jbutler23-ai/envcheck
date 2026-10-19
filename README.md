@@ -1,153 +1,142 @@
-# envcheck ✦
+# envcheck
 
-**Audit environment variable usage across your entire codebase. Zero dependencies. Pure Python.**
+envcheck compares environment variable references in source code with the names
+defined in dotenv files. It reports missing variables and definitions that no
+longer appear in the code.
 
-Finds vars your code needs but forgot to define — before they crash in production. Also flags stale vars sitting in your `.env` that nothing uses anymore.
-
----
-
-## The problem
-
-You add `os.environ["STRIPE_WEBHOOK_SECRET"]` in your code, deploy, and get a `KeyError` at runtime because nobody added it to `.env`. Or you have 30 vars in `.env` and half of them are from a feature you deleted six months ago. **envcheck** catches both.
-
----
-
-## Features
-
-- Scans source files for every env var reference
-- Cross-checks against all `.env*` files in your project
-- Reports: defined · missing · unused
-- Supports **10 languages** out of the box
-- JSON output for CI pipelines (`--format json`)
-- `--strict` flag for fail-fast CI enforcement
-- `--show-refs` to see exactly where each var is used
-- Zero external dependencies — pure Python stdlib
-
----
-
-## Supported Languages
-
-| Language | Patterns detected |
-|---|---|
-| Python | `os.environ["X"]`, `os.getenv("X")`, `environ.get("X")` |
-| JavaScript / TypeScript | `process.env.X`, `import.meta.env.X`, `Deno.env.get("X")` |
-| Ruby | `ENV["X"]`, `ENV.fetch("X")` |
-| Go | `os.Getenv("X")`, `os.LookupEnv("X")` |
-| Rust | `env::var("X")`, `std::env::var("X")` |
-| PHP | `getenv("X")`, `$_ENV["X"]`, `$_SERVER["X"]` |
-| Java / Kotlin | `System.getenv("X")` |
-| C# / VB | `Environment.GetEnvironmentVariable("X")` |
-| Shell | `$VAR`, `${VAR}` |
-
----
+It's for developers keeping local configuration and example files in sync with
+an application. It runs locally, uses Python 3.10 or newer, and has no runtime
+dependencies. Reports contain variable names and file locations, never values.
 
 ## Install
 
-```bash
+```sh
 git clone https://github.com/Jbutler23-ai/envcheck.git
 cd envcheck
-
-# Run directly
-python envcheck.py
-
-# Or install globally
-pip install --editable .
-envcheck
+python -m pip install .
+envcheck --help
 ```
 
----
+You can also run `python envcheck.py` without installing anything. For development,
+use `python -m pip install --editable .`.
 
-## Usage
+## Try it
 
-```
-envcheck [options]
+The included example uses made-up settings and needs no credentials:
 
-  --path PATH       Directory to scan  (default: .)
-  --env FILE        Specific .env file to check against (repeatable)
-  --format FORMAT   plain | json  (default: plain)
-  --strict          Exit 1 if any vars are missing  (great for CI)
-  --show-refs       Show file:line for each var reference
-  --no-unused       Hide unused-var warnings
-  --no-color        Disable colored output
+```sh
+python envcheck.py --path examples/basic --strict --show-refs
+python envcheck.py --path examples/basic --format json
 ```
 
----
+Both `API_URL` and `REQUEST_TIMEOUT` should be reported as defined. To check your
+own application:
 
-## Examples
-
-```bash
-# Scan current project
-envcheck
-
-# Scan a subdirectory, check against a specific env file
-envcheck --path ./backend --env .env.production
-
-# Use in CI — fail the build if anything is missing
-envcheck --strict
-
-# See exactly where every var is referenced
-envcheck --show-refs
-
-# JSON output for scripts
-envcheck --format json | jq '.missing'
-
-# Check multiple env files at once
-envcheck --env .env --env .env.example
+```sh
+envcheck --path ../my-app --env ../my-app/.env.example --strict
 ```
 
----
+Without `--env`, envcheck reads `.env` and `.env.*` files directly inside the scan
+root. It combines their keys. That checks coverage across the selected files;
+it does **not** prove that each environment has all the settings it needs. For a
+deployment check, select its file explicitly. Repeated `--env` arguments also
+combine keys. Relative `--env` paths are relative to your current working
+directory, even when `--path` points somewhere else.
 
-## Sample Output
+## Options
 
+| Option | Purpose |
+| --- | --- |
+| `--path PATH` | Directory to scan recursively; defaults to the current directory |
+| `--env FILE` | Dotenv file to compare against; can be repeated |
+| `--format plain\|json` | Text or machine-readable JSON output |
+| `--strict` | Exit with status 1 when a referenced name is missing |
+| `--show-refs` | Include reference locations in text output |
+| `--no-unused` | Hide unused-variable details; summary counts remain |
+| `--no-color` | Disable terminal colors |
+
+Exit status is 0 after a completed scan, 1 for missing variables with `--strict`,
+and 2 for invalid arguments or a file/directory read error. Errors go to stderr.
+JSON mode writes only JSON to stdout after a successful scan, including when
+`--strict` finds missing names.
+
+## Supported references
+
+The scanner recognizes common literal forms, including:
+
+| Source | Examples |
+| --- | --- |
+| Python | `os.environ["NAME"]`, `os.environ.get("NAME")`, `os.getenv("NAME")` |
+| JavaScript / TypeScript | `process.env.NAME`, `process.env["NAME"]`, `import.meta.env.NAME`, `Deno.env.get("NAME")`, `Bun.env.NAME` |
+| Ruby | `ENV["NAME"]`, `ENV.fetch("NAME")`, `ENV.dig("NAME")` |
+| Go | `os.Getenv("NAME")`, `os.LookupEnv("NAME")` |
+| Rust | `env::var("NAME")`, `std::env::var("NAME")`, `env::var_os("NAME")` |
+| PHP | `getenv("NAME")`, `$_ENV["NAME"]`, `$_SERVER["NAME"]`, `env("NAME")` |
+| Java / Kotlin | `System.getenv("NAME")` |
+| C# / VB | `Environment.GetEnvironmentVariable("NAME")` |
+| Shell | `$NAME`, `${NAME}`, `${NAME:-fallback}` |
+
+Names are case-sensitive, including single-letter names. Every detected name is
+compared with the selected dotenv files. The current process environment is not
+used, and system/CI names are not silently exempted.
+
+Dotenv parsing accepts `NAME=value` and `export NAME=value`, blank lines,
+comments, and a UTF-8 byte-order mark. It checks for a key's presence, not whether
+its value is valid or nonempty. Quoted multiline values are skipped so their
+contents do not become variable names; an unclosed quote is an error. Other
+malformed lines are ignored. Source and dotenv files must be UTF-8.
+
+## Limits
+
+This is a line-based pattern scanner, not a language parser. It can miss computed
+names, aliases, and calls split across lines. Strings, inline comments, and block
+comments can produce false positives. A fallback such as
+`os.getenv("TIMEOUT", "10")` still counts as a reference. Shell references may be
+local variables rather than exported environment variables.
+
+The scanner skips common dependency, build, cache, and virtual environment
+directories, including `.git`, `node_modules`, `.venv`, `vendor`, `dist`, and `build`.
+It skips source symlinks and does not follow directory symlinks. It does not yet
+apply `.gitignore` or custom exclusion rules. Dotenv discovery is limited to the
+scan root; nested service directories need their own scan.
+
+envcheck does not execute source code, load settings into the process environment,
+or send files over the network. It is a configuration check, not a secret scanner
+or a replacement for testing the application.
+
+## CI
+
+Install from this repository, then select the application and configuration file
+you want to check. For example, in a checkout of this repository:
+
+```sh
+python -m pip install .
+envcheck --path examples/basic --env examples/basic/.env.example --strict --format json
 ```
-┌──────────────────────────────────┐
-│       envcheck  ✦  v1.0          │
-└──────────────────────────────────┘
 
-Scanning: /home/user/myapp
+For your own workflow, replace those example paths with your application paths.
+Keep real dotenv files out of Git. Commit only examples containing made-up values.
 
-  📄  .env                            12 var(s)
-  📄  .env.example                     9 var(s)
+JSON output has `summary`, `ok`, `missing`, and `unused` fields. Missing entries
+include their source file and line. To save a report while keeping the exit code,
+redirect it directly:
 
-Scanning source files…
-Scanned 47 source file(s) · 15 unique var reference(s)
-
-──────────────────────────────────────────────────────
-
-  ✓  DATABASE_URL                defined  (.env, .env.example)
-  ✓  SECRET_KEY                  defined  (.env, .env.example)
-  ✓  REDIS_URL                   defined  (.env)
-  ✗  STRIPE_WEBHOOK_SECRET       MISSING   ← payments.py:34, webhooks.py:12
-  ✗  SENDGRID_API_KEY            MISSING   ← email.py:8
-  ⚠  OLD_SENTRY_DSN              unused    (in .env)
-  ⚠  LEGACY_DB_HOST              unused    (in .env, .env.example)
-
-──────────────────────────────────────────────────────
-
-  5 ok  ·  2 missing  ·  2 unused
-
-  Add missing vars to your .env (and .env.example)
+```sh
+envcheck --strict --format json > envcheck-report.json
 ```
 
----
+## Development
 
-## CI Integration
-
-Add to your GitHub Actions workflow:
-
-```yaml
-- name: Check environment variables
-  run: python envcheck.py --strict
+```sh
+python -m unittest discover -s tests -v
+python -m pip install build
+python -m build
 ```
 
-Or with the installed command:
-
-```yaml
-- run: envcheck --strict --format json | tee envcheck-report.json
-```
-
----
+The GitHub Actions workflow runs tests and installation checks on Windows, Linux,
+and macOS with Python 3.10, 3.12, and 3.14. See [ROADMAP.md](ROADMAP.md) for the next
+steps, including more accurate parsing and separate checks for each environment.
 
 ## License
 
-MIT
+[MIT](LICENSE).

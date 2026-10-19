@@ -6,3 +6,15 @@ dist/
 build/
 .venv/
 venv/
+
+# Local configuration; commit examples with made-up values only.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+.pytest_cache/
+.coverage
+htmlcov/

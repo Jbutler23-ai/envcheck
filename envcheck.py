@@ -1,67 +1,54 @@
 #!/usr/bin/env python3
-"""
-envcheck - Audit environment variable usage across your codebase.
-Finds referenced-but-missing vars and defined-but-unused vars.
-Zero dependencies. Pure Python.
-"""
+"""Find environment variable references missing from dotenv files."""
 
+import argparse
+from collections import defaultdict
+import json
+import os
+from pathlib import Path
 import re
 import sys
-import os
-import json
-import argparse
-from pathlib import Path
-from collections import defaultdict
 
 
-# ── Language patterns ──────────────────────────────────────────────────────────
+NAME = r'([A-Za-z_][A-Za-z0-9_]*)'
+QUOTED_NAME = r'''['"]''' + NAME + r'''['"]'''
 
 PATTERNS: dict[str, list[re.Pattern]] = {
     'python': [
-        re.compile(r'os\.environ\[[\'"]([\w]+)[\'"]\]'),
-        re.compile(r'os\.environ\.get\([\'"]([\w]+)[\'"]'),
-        re.compile(r'os\.getenv\([\'"]([\w]+)[\'"]'),
-        re.compile(r'environ\.get\([\'"]([\w]+)[\'"]'),
-        re.compile(r'getenv\([\'"]([\w]+)[\'"]'),
+        re.compile(r'\b(?:os\s*\.\s*)?environ\s*\[\s*' + QUOTED_NAME + r'\s*\]'),
+        re.compile(r'\b(?:os\s*\.\s*)?environ\s*\.\s*get\s*\(\s*' + QUOTED_NAME),
+        re.compile(r'\b(?:os\s*\.\s*)?getenv\s*\(\s*' + QUOTED_NAME),
     ],
     'javascript': [
-        re.compile(r'process\.env\.([A-Z_][A-Z0-9_]{1,})(?!\w)'),
-        re.compile(r'process\.env\[[\'"]([\w]+)[\'"]\]'),
-        re.compile(r'import\.meta\.env\.([A-Z_][A-Z0-9_]*)(?!\w)'),
-        re.compile(r'Deno\.env\.get\([\'"]([\w]+)[\'"]'),
-        re.compile(r'Bun\.env\.([A-Z_][A-Z0-9_]*)(?!\w)'),
+        re.compile(r'\b(?:process|Bun)\s*\.\s*env\s*\.\s*' + NAME),
+        re.compile(r'\b(?:process|Bun)\s*\.\s*env\s*\[\s*' + QUOTED_NAME + r'\s*\]'),
+        re.compile(r'\bimport\s*\.\s*meta\s*\.\s*env\s*\.\s*' + NAME),
+        re.compile(r'\bimport\s*\.\s*meta\s*\.\s*env\s*\[\s*' + QUOTED_NAME + r'\s*\]'),
+        re.compile(r'\bDeno\s*\.\s*env\s*\.\s*get\s*\(\s*' + QUOTED_NAME),
     ],
     'ruby': [
-        re.compile(r'ENV\[[\'"]([\w]+)[\'"]\]'),
-        re.compile(r'ENV\.fetch\([\'"]([\w]+)[\'"]'),
-        re.compile(r'ENV\.dig\([\'"]([\w]+)[\'"]'),
+        re.compile(r'\bENV\s*\[\s*' + QUOTED_NAME + r'\s*\]'),
+        re.compile(r'\bENV\s*\.\s*(?:fetch|dig)\s*\(\s*' + QUOTED_NAME),
     ],
     'go': [
-        re.compile(r'os\.Getenv\("([\w]+)"\)'),
-        re.compile(r'os\.LookupEnv\("([\w]+)"\)'),
+        re.compile(r'\bos\s*\.\s*(?:Getenv|LookupEnv)\s*\(\s*"' + NAME + r'"'),
     ],
     'php': [
-        re.compile(r'getenv\([\'"]([\w]+)[\'"]'),
-        re.compile(r'\$_ENV\[[\'"]([\w]+)[\'"]\]'),
-        re.compile(r'\$_SERVER\[[\'"]([\w]+)[\'"]\]'),
-        re.compile(r'env\([\'"]([\w]+)[\'"]'),
+        re.compile(r'\b(?:getenv|env)\s*\(\s*' + QUOTED_NAME),
+        re.compile(r'\$_(?:ENV|SERVER)\s*\[\s*' + QUOTED_NAME + r'\s*\]'),
     ],
     'rust': [
-        re.compile(r'env::var\("([\w]+)"\)'),
-        re.compile(r'std::env::var\("([\w]+)"\)'),
-        re.compile(r'env::var_os\("([\w]+)"\)'),
+        re.compile(r'\b(?:std\s*::\s*)?env\s*::\s*var(?:_os)?\s*\(\s*"' + NAME + r'"'),
     ],
     'shell': [
-        re.compile(r'\$\{([A-Z_][A-Z0-9_]+)\}'),
-        re.compile(r'(?<!\$)\$([A-Z_][A-Z0-9_]{2,})(?!\w)'),
+        re.compile(r'(?<![\\$])\$\{' + NAME + r'(?=\}|:?[=+?\-])'),
+        re.compile(r'(?<![\\$])\$' + NAME),
     ],
     'dotnet': [
-        re.compile(r'Environment\.GetEnvironmentVariable\("([\w]+)"\)'),
-        re.compile(r'GetEnvironmentVariable\("([\w]+)"\)'),
+        re.compile(r'\b(?:Environment\s*\.\s*)?GetEnvironmentVariable\s*\(\s*"' + NAME + r'"'),
     ],
     'java': [
-        re.compile(r'System\.getenv\("([\w]+)"\)'),
-        re.compile(r'System\.getenv\([\'"]([\w]+)[\'"]\)'),
+        re.compile(r'\bSystem\s*\.\s*getenv\s*\(\s*"' + NAME + r'"'),
     ],
 }
 
@@ -69,13 +56,9 @@ EXT_LANG: dict[str, str] = {
     '.py': 'python', '.pyw': 'python',
     '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
     '.ts': 'javascript', '.tsx': 'javascript', '.jsx': 'javascript',
-    '.rb': 'ruby',
-    '.go': 'go',
-    '.php': 'php',
-    '.rs': 'rust',
+    '.rb': 'ruby', '.go': 'go', '.php': 'php', '.rs': 'rust',
     '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell', '.fish': 'shell',
-    '.cs': 'dotnet', '.vb': 'dotnet',
-    '.java': 'java', '.kt': 'java',
+    '.cs': 'dotnet', '.vb': 'dotnet', '.java': 'java', '.kt': 'java',
 }
 
 SKIP_DIRS = frozenset({
@@ -85,244 +68,225 @@ SKIP_DIRS = frozenset({
     '.turbo', '.cache', 'tmp', 'temp',
 })
 
-# Common system/CI vars — skip these to reduce noise
-SYSTEM_VARS = frozenset({
-    'PATH', 'HOME', 'USER', 'SHELL', 'PWD', 'LANG', 'LC_ALL', 'LC_CTYPE',
-    'TERM', 'TMPDIR', 'TMP', 'TEMP', 'EDITOR', 'VISUAL', 'PAGER', 'DISPLAY',
-    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'XDG_CACHE_HOME',
-    'CI', 'CD', 'GITHUB_ACTIONS', 'GITHUB_TOKEN', 'GITHUB_SHA',
-    'TRAVIS', 'CIRCLECI', 'GITLAB_CI', 'BITBUCKET_BUILD_NUMBER',
-    'NODE_ENV', 'RAILS_ENV', 'RACK_ENV', 'APP_ENV', 'FLASK_ENV',
-    'DEBUG', 'VERBOSE', 'LOG_LEVEL',
-})
+ENV_ASSIGNMENT = re.compile(r'^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=')
+Ref = tuple[str, int]
 
 
-# ── ANSI colors ────────────────────────────────────────────────────────────────
-
-class C:
-    RESET   = '\033[0m'
-    BOLD    = '\033[1m'
-    DIM     = '\033[2m'
-    RED     = '\033[91m'
-    GREEN   = '\033[92m'
-    YELLOW  = '\033[93m'
-    BLUE    = '\033[94m'
-    CYAN    = '\033[96m'
+class ScanError(Exception):
+    """An input could not be read, so the scan is incomplete."""
 
 
-def disable_color():
-    for a in vars(C):
-        if not a.startswith('_'):
-            setattr(C, a, '')
+class Colors:
+    def __init__(self, enabled: bool):
+        self.reset = '\033[0m' if enabled else ''
+        self.bold = '\033[1m' if enabled else ''
+        self.dim = '\033[2m' if enabled else ''
+        self.red = '\033[91m' if enabled else ''
+        self.green = '\033[92m' if enabled else ''
+        self.yellow = '\033[93m' if enabled else ''
 
 
-# ── Core logic ─────────────────────────────────────────────────────────────────
-
-def parse_env_file(path: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
+def read_text(path: Path) -> str:
     try:
-        for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                key, _, val = line.partition('=')
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                if re.match(r'^[A-Za-z_]\w*$', key):
-                    result[key] = val
-    except Exception:
-        pass
-    return result
+        return path.read_text(encoding='utf-8-sig')
+    except UnicodeError as exc:
+        raise ScanError(f'Cannot read {path}: expected UTF-8 text.') from exc
+    except OSError as exc:
+        raise ScanError(f'Cannot read {path}: {exc.strerror or type(exc).__name__}.') from exc
+
+
+def parse_env_file(path: Path) -> set[str]:
+    """Read assignment names; values are not needed for this check."""
+    names = set()
+    quote = None
+    quote_line = 0
+    for line_number, line in enumerate(read_text(path).splitlines(), 1):
+        if quote:
+            if has_closing_quote(line, quote):
+                quote = None
+            continue
+        line = line.strip()
+        match = ENV_ASSIGNMENT.match(line)
+        if match:
+            names.add(match.group(1))
+            value = line[match.end():].lstrip()
+            if value.startswith(('"', "'")) and not has_closing_quote(value[1:], value[0]):
+                quote = value[0]
+                quote_line = line_number
+    if quote:
+        raise ScanError(f'Cannot read {path}: unclosed quoted value on line {quote_line}.')
+    return names
+
+
+def has_closing_quote(text: str, quote: str) -> bool:
+    escaped = False
+    for char in text:
+        if char == quote and not escaped:
+            return True
+        escaped = char == '\\' and not escaped
+    return False
 
 
 def find_env_files(root: Path) -> list[Path]:
-    found = []
-    try:
-        for p in sorted(root.iterdir()):
-            if p.is_file() and p.name.startswith('.env'):
-                found.append(p)
-    except PermissionError:
-        pass
-    return found
-
-
-Ref = tuple[str, int]  # (filepath, line_number)
+    return [
+        path for path in sorted(root.iterdir())
+        if (path.name == '.env' or path.name.startswith('.env.'))
+        and not path.is_symlink() and path.is_file()
+    ]
 
 
 def scan_file(path: Path, root: Path) -> dict[str, list[Ref]]:
     lang = EXT_LANG.get(path.suffix.lower())
-    if not lang:
+    if not lang or path.is_symlink():
         return {}
-    patterns = PATTERNS[lang]
-    found: dict[str, list[Ref]] = defaultdict(list)
-    try:
-        for i, line in enumerate(
-            path.read_text(encoding='utf-8', errors='replace').splitlines(), 1
-        ):
-            if line.strip().startswith('#') or line.strip().startswith('//'):
-                continue
-            for pat in patterns:
-                for m in pat.finditer(line):
-                    var = m.group(1).upper()
-                    if var and var not in SYSTEM_VARS and len(var) >= 2:
-                        found[var].append((str(path.relative_to(root)), i))
-    except Exception:
-        pass
-    return dict(found)
+    found: dict[str, set[Ref]] = defaultdict(set)
+    relative_path = path.relative_to(root).as_posix()
+    for line_number, line in enumerate(read_text(path).splitlines(), 1):
+        if line.lstrip().startswith(('#', '//')):
+            continue
+        for pattern in PATTERNS[lang]:
+            for match in pattern.finditer(line):
+                found[match.group(1)].add((relative_path, line_number))
+    return {name: sorted(found[name]) for name in sorted(found)}
 
 
-def scan_directory(root: Path) -> dict[str, list[Ref]]:
+def scan_directory(root: Path) -> tuple[dict[str, list[Ref]], int]:
     all_refs: dict[str, list[Ref]] = defaultdict(list)
     file_count = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for fname in filenames:
-            fp = Path(dirpath) / fname
-            if fp.suffix.lower() in EXT_LANG:
-                refs = scan_file(fp, root)
+
+    def walk_error(error: OSError):
+        raise ScanError(f'Cannot scan {error.filename}: {error.strerror}.') from error
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=walk_error, followlinks=False):
+        dirnames[:] = sorted(
+            name for name in dirnames
+            if name not in SKIP_DIRS and not (Path(dirpath) / name).is_symlink()
+        )
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            if path.suffix.lower() in EXT_LANG and not path.is_symlink():
+                refs = scan_file(path, root)
                 file_count += 1
-                for var, locs in refs.items():
-                    all_refs[var].extend(locs)
-    return dict(all_refs), file_count
+                for name, locations in refs.items():
+                    all_refs[name].extend(locations)
+    return {name: sorted(all_refs[name]) for name in sorted(all_refs)}, file_count
 
 
-# ── Output ─────────────────────────────────────────────────────────────────────
-
-def print_header():
-    print(f"\n{C.BOLD}{C.CYAN}┌──────────────────────────────────┐{C.RESET}")
-    print(f"{C.BOLD}{C.CYAN}│       envcheck  ✦  v1.0          │{C.RESET}")
-    print(f"{C.BOLD}{C.CYAN}└──────────────────────────────────┘{C.RESET}\n")
+def result_groups(refs: dict[str, list[Ref]], env_data: dict[str, set[str]]):
+    defined = set().union(*env_data.values())
+    return set(refs) & defined, set(refs) - defined, defined - set(refs)
 
 
 def print_results(
     refs: dict[str, list[Ref]],
-    env_data: dict[str, dict[str, str]],
+    env_data: dict[str, set[str]],
     show_refs: bool,
     hide_unused: bool,
-    root: Path,
+    colors: Colors,
 ) -> int:
-    defined  = set(k for d in env_data.values() for k in d)
-    missing  = set(refs) - defined
-    unused   = defined - set(refs)
-    ok_vars  = set(refs) & defined
-
-    width = max((len(v) for v in (set(refs) | defined)), default=20) + 2
-    width = max(width, 26)
-
-    for var in sorted(ok_vars):
-        sources = [n for n, d in env_data.items() if var in d]
-        print(f"  {C.GREEN}✓{C.RESET}  {C.BOLD}{var:<{width}}{C.RESET}  defined  {C.DIM}({', '.join(sources)}){C.RESET}")
+    ok_vars, missing, unused = result_groups(refs, env_data)
+    width = max((len(name) for name in set(refs) | unused), default=20) + 2
+    c = colors
+    for name in sorted(ok_vars):
+        sources = ', '.join(path for path, names in env_data.items() if name in names)
+        print(f'  {c.green}[ok]{c.reset}      {name:<{width}} defined ({sources})')
         if show_refs:
-            for fpath, line in refs[var][:4]:
-                print(f"      {C.DIM}↳  {fpath}:{line}{C.RESET}")
-
-    for var in sorted(missing):
-        locs    = refs[var]
-        excerpt = ', '.join(f"{r[0]}:{r[1]}" for r in locs[:3])
-        more    = f"  +{len(locs)-3} more" if len(locs) > 3 else ''
-        print(f"  {C.RED}✗{C.RESET}  {C.BOLD}{var:<{width}}{C.RESET}  {C.RED}MISSING{C.RESET}   ← {C.DIM}{excerpt}{more}{C.RESET}")
-
+            for path, line in refs[name]:
+                print(f'      {c.dim}{path}:{line}{c.reset}')
+    for name in sorted(missing):
+        locations = refs[name] if show_refs else refs[name][:3]
+        excerpt = ', '.join(f'{path}:{line}' for path, line in locations)
+        remaining = len(refs[name]) - len(locations)
+        more = f' (+{remaining} more)' if remaining else ''
+        print(f'  {c.red}[missing]{c.reset} {name:<{width}} {excerpt}{more}')
     if not hide_unused:
-        for var in sorted(unused):
-            sources = [n for n, d in env_data.items() if var in d]
-            print(f"  {C.YELLOW}⚠{C.RESET}  {C.BOLD}{var:<{width}}{C.RESET}  {C.YELLOW}unused{C.RESET}    (in {', '.join(sources)})")
-
-    print(f"\n{C.DIM}{'─' * 54}{C.RESET}")
-
-    ok_s     = f"{C.GREEN}{len(ok_vars)} ok{C.RESET}"
-    miss_s   = f"{C.RED}{len(missing)} missing{C.RESET}"     if missing else f"{C.DIM}0 missing{C.RESET}"
-    unused_s = f"{C.YELLOW}{len(unused)} unused{C.RESET}"    if unused  else f"{C.DIM}0 unused{C.RESET}"
-    print(f"\n  {ok_s}  ·  {miss_s}  ·  {unused_s}\n")
-
+        for name in sorted(unused):
+            sources = ', '.join(path for path, names in env_data.items() if name in names)
+            print(f'  {c.yellow}[unused]{c.reset}  {name:<{width}} in {sources}')
+    print(f'\n  {len(ok_vars)} ok / {len(missing)} missing / {len(unused)} unused\n')
     if missing:
-        print(f"  {C.RED}Add missing vars to your .env (and .env.example){C.RESET}\n")
-
+        print('  Check missing names against the dotenv files for this environment.\n')
     return 1 if missing else 0
 
 
-def print_json(refs: dict[str, list[Ref]], env_data: dict[str, dict[str, str]]) -> int:
-    defined  = set(k for d in env_data.values() for k in d)
-    missing  = set(refs) - defined
-    unused   = defined - set(refs)
-    ok_vars  = set(refs) & defined
-
-    out = {
+def print_json(
+    refs: dict[str, list[Ref]], env_data: dict[str, set[str]], hide_unused: bool = False,
+) -> int:
+    ok_vars, missing, unused = result_groups(refs, env_data)
+    report = {
         'summary': {'ok': len(ok_vars), 'missing': len(missing), 'unused': len(unused)},
-        'ok':      sorted(ok_vars),
-        'missing': {v: [{'file': r[0], 'line': r[1]} for r in refs[v]] for v in sorted(missing)},
-        'unused':  sorted(unused),
+        'ok': sorted(ok_vars),
+        'missing': {
+            name: [{'file': path, 'line': line} for path, line in refs[name]]
+            for name in sorted(missing)
+        },
+        'unused': [] if hide_unused else sorted(unused),
     }
-    print(json.dumps(out, indent=2))
+    print(json.dumps(report, indent=2))
     return 1 if missing else 0
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
-
-def main():
-    ap = argparse.ArgumentParser(
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
         prog='envcheck',
-        description='Audit environment variable usage across your codebase.',
+        description='Compare environment variable references with dotenv assignment names.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 supported languages:
-  Python · JavaScript/TypeScript · Ruby · Go · Rust · PHP · Java/Kotlin · C#/VB · Shell
+  Python, JavaScript/TypeScript, Ruby, Go, Rust, PHP, Java/Kotlin, C#/VB, Shell
 
 examples:
-  envcheck                        scan current directory
-  envcheck --path ./backend       scan a specific path
-  envcheck --env .env.production  check against a specific .env file
-  envcheck --strict               exit 1 on any missing vars (great for CI)
-  envcheck --format json          JSON output for scripts/CI
-  envcheck --show-refs            show file:line for each reference
-  envcheck --no-unused            hide unused-variable warnings
-        ''',
+  envcheck                         scan the current directory
+  envcheck --path ./backend         scan another directory
+  envcheck --env .env.production    select a dotenv file (relative to the current directory)
+  envcheck --strict --format json   emit JSON and exit 1 for missing names
+
+exit codes: 0 = scan complete, 1 = missing names with --strict, 2 = input/read error
+''',
     )
-    ap.add_argument('--path',       default='.',  help='directory to scan  (default: .)')
-    ap.add_argument('--env',        action='append', metavar='FILE', help='.env file to check against (repeatable)')
-    ap.add_argument('--format',     default='plain', choices=['plain', 'json'])
-    ap.add_argument('--strict',     action='store_true', help='exit 1 if any vars are missing')
-    ap.add_argument('--show-refs',  action='store_true', help='print file:line for each var reference')
-    ap.add_argument('--no-unused',  action='store_true', help='hide unused-var warnings')
-    ap.add_argument('--no-color',   action='store_true')
-    args = ap.parse_args()
+    parser.add_argument('--path', default='.', help='directory to scan (default: .)')
+    parser.add_argument('--env', action='append', metavar='FILE', help='dotenv file to compare (repeatable)')
+    parser.add_argument('--format', default='plain', choices=['plain', 'json'])
+    parser.add_argument('--strict', action='store_true', help='exit 1 if any names are missing')
+    parser.add_argument('--show-refs', action='store_true', help='show all detected file:line references in plain output')
+    parser.add_argument('--no-unused', action='store_true', help='hide unused-name details; keep the summary count')
+    parser.add_argument('--no-color', action='store_true', help='disable terminal colors')
+    args = parser.parse_args(argv)
 
-    if args.no_color or not sys.stdout.isatty():
-        disable_color()
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='backslashreplace')
 
-    print_header()
-
-    root = Path(args.path).resolve()
-    print(f"{C.DIM}Scanning: {root}{C.RESET}\n")
-
-    # Load env files
-    env_paths = [Path(e) for e in args.env] if args.env else find_env_files(root)
-    env_data: dict[str, dict[str, str]] = {}
-    for ep in env_paths:
-        if ep.exists():
-            data = parse_env_file(ep)
-            env_data[ep.name] = data
-            print(f"  {C.BLUE}📄{C.RESET}  {ep.name:<30}  {C.DIM}{len(data)} var(s){C.RESET}")
-        else:
-            print(f"  {C.YELLOW}⚠{C.RESET}   {ep} — not found")
-
-    if not env_data:
-        print(f"  {C.YELLOW}No .env files found. Showing all referenced vars.{C.RESET}")
-
-    # Scan source
-    print(f"\n{C.DIM}Scanning source files…{C.RESET}")
-    refs, file_count = scan_directory(root)
-    print(f"{C.DIM}Scanned {file_count} source file(s) · {len(refs)} unique var reference(s){C.RESET}\n")
-    print(f"{C.DIM}{'─' * 54}{C.RESET}\n")
+    colors = Colors(not args.no_color and sys.stdout.isatty() and 'NO_COLOR' not in os.environ)
+    try:
+        root = Path(args.path).resolve()
+        if not root.is_dir():
+            raise ScanError(f'Scan path is not a directory: {root}')
+        env_paths = [Path(name).resolve() for name in args.env] if args.env else find_env_files(root)
+        env_data: dict[str, set[str]] = {}
+        for path in env_paths:
+            try:
+                label = path.relative_to(root).as_posix()
+            except ValueError:
+                label = str(path)
+            env_data[label] = parse_env_file(path)
+        refs, file_count = scan_directory(root)
+    except (ScanError, OSError, RuntimeError) as exc:
+        print(f'envcheck: {exc}', file=sys.stderr)
+        return 2
 
     if args.format == 'json':
-        exit_code = print_json(refs, env_data)
+        result = print_json(refs, env_data, args.no_unused)
     else:
-        exit_code = print_results(refs, env_data, args.show_refs, args.no_unused, root)
-
-    if args.strict:
-        sys.exit(exit_code)
+        print(f'\n{colors.bold}envcheck{colors.reset}\n\nScanning: {root}\n')
+        for label, names in env_data.items():
+            print(f'  {label}: {len(names)} name(s)')
+        if not env_data:
+            print('  No dotenv files found; all detected names are reported as missing.')
+        print(f'\nScanned {file_count} source file(s); {len(refs)} unique name(s).\n')
+        result = print_results(refs, env_data, args.show_refs, args.no_unused, colors)
+    return result if args.strict else 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

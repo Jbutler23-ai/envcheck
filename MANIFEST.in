@@ -1,0 +1,3 @@
+include LICENSE README.md ROADMAP.md
+recursive-include examples *.py .env.example
+recursive-include tests *.py
