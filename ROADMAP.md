@@ -4,50 +4,47 @@ The basic comparison works, but pattern matching has limits. The next work is
 about making the results more useful on real applications. These are estimates
 for implementation, tests, and documentation, not hours already spent.
 
-## Python-aware scanning (8-12 hours)
+## Python-aware scanning (done)
 
-- Use Python's AST to distinguish environment lookups from strings and comments.
-- Resolve common imports and aliases for os, environ, and getenv.
-- Recognize literal keys across multiple lines and mark calls with fallback values.
-- Add fixtures for aliases, shadowed names, syntax errors, and optional settings.
+Done: Python files are parsed with the `ast` module, so comments and strings no
+longer match; aliases of `os`, `environ`, and `getenv` are resolved per scope;
+rebound names stop matching; multiline lookups report their starting line; and
+files that fail to parse fall back to the line-based patterns. Fixtures cover
+aliases, shadowing, syntax errors, and fallback values.
 
-Done when supported literal lookups retain accurate file/line locations, comments
-and ordinary strings stop producing Python matches, and unsupported cases have a
-documented behavior.
+Also done: a name whose every lookup carries a fallback is reported as
+optional rather than missing, and one lookup without a fallback makes it
+required again.
 
-## Project configuration and exclusions (4-6 hours)
+Also done: an explicit `None` default or an argument that expands to nothing,
+such as `*[]`, leaves the name required, and lookups with a computed key are
+counted per call and located instead of skipped silently.
 
-- Add a project configuration file for ignored paths and variable names.
-- Define how command-line options override project settings.
-- Support user-selected exclusions for generated code, tests, and system variables.
-- Test invalid configuration, glob matching, and paths on Windows and Unix.
+## Project configuration and exclusions (done)
 
-Done when the same checked-in configuration produces repeatable results locally
-and in CI without hiding unlisted names.
+`envcheck.json` in the scan directory holds `ignore.paths` (glob patterns) and
+`ignore.names`. `--config` and `--no-config` select or disable the file, and
+`--ignore-path` / `--ignore-name` add to it. Invalid configuration is an error.
+Fixtures cover glob semantics, Windows-style separators, invalid files, and the
+interaction between the file and the command line. Not covered: `.gitignore`.
 
-## Separate service and environment checks (7-10 hours)
+## Separate service and environment checks (done)
 
-- Let a project define source roots and dotenv files for each service.
-- Report development, test, and production coverage separately instead of merging
-  their keys into one set.
-- Make shared defaults and overrides explicit.
-- Add fixtures for two services that use the same variable names differently.
+`envcheck.json` defines `services` with their own `paths` and per-environment
+dotenv files, plus a top-level `environments` default that a service replaces by
+name. Each service and environment pair is reported separately in both output
+formats, and `--service` / `--environment` narrow a run. Fixtures cover two
+services that use the same names differently, inheritance and override, filters,
+invalid configuration, and missing paths or files.
 
-Done when a value defined only for development cannot make a production check
-pass, and each report identifies the service and environment it covers.
+## Dotenv parsing and empty-value checks (done)
 
-## Dotenv parsing and empty-value checks (5-7 hours)
+Quoting, escape rules, comment boundaries, and multiline values have fixtures
+for each supported case. An empty value is distinguished from a missing key and
+reported separately behind `--check-empty` or `checks.empty`. Duplicate keys and
+malformed lines are reported with file and line numbers and never their values.
+Plain and JSON output carry the same findings.
 
-- Extend the basic quoted-value handling to cover escape rules and comment
-  boundaries, with fixtures for each supported case.
-- Distinguish a missing key from a present but empty value.
-- Define duplicate-key and malformed-line behavior, with useful line numbers.
-- Add an optional empty-value check without printing values in errors or reports.
-
-Done when these cases have fixtures, documented semantics, and identical results
-from text and JSON output.
-
-The remaining estimate is **24-35 hours**. The order may change as these features
-are tried on small sample applications. Packaging repairs, the initial regression
-suite, and the existing CI workflow are already done and are not part of this
-estimate.
+All four planned items are complete. The test suite passes on Python 3.10,
+3.12, and 3.14. Future work will come from trying envcheck on more sample
+applications; `.gitignore` support is the most likely next request.
